@@ -1,0 +1,47 @@
+# PREFERENCES — how you want things done.
+#
+# One bullet per line. Each carries a stable ID, assigned once, never renumbered.
+# The agent may APPEND new bullets it learns from corrections. The agent may NOT
+# rewrite, reorder or renumber any existing line.
+# Levels: (rule) never violate · (default) unless told otherwise · (tie) when options are equal.
+# Source:  (said) you stated it · (observed) the agent inferred it from a pattern.
+#          Challenge or delete any (observed) line — an inferred preference held
+#          wrongly is worse than none. Say so and it is removed.
+# Section headers carry "| when:" — the condition for loading that span.
+#   "when: always" means no trigger is needed; it applies to every reply.
+#   "| project: <name>" scopes a span to one project, keeping it out of the global table.
+# The generated index at lattice_data/T0.md says which IDs a task needs.
+#
+# This file ships empty. Nothing fires on its own until you teach it something —
+# the fastest way is to correct an AI once and ask it to remember the correction.
+
+## ask — how to answer and what not to ask | when: always
+# (empty — awaiting your first correction)
+
+## tone — register | when: always
+# (empty — awaiting your first correction)
+
+## build — how to approach any project | when: always
+# (empty — awaiting your first correction)
+
+## mem — what to record without being asked | when: always
+[mem-01] (said) (rule) When you say any version of "eventually I'd like to…", write an idea file without being asked.
+[mem-02] (observed) (default) Record durable facts and decisions as they happen, not at the end of a session.
+[mem-03] (observed) (default) When unsure how you'd frame something worth recording, ask in one line, in the flow of work.
+
+## cost — paid API calls | when: a paid API or model call is possible
+[cost-01] (said) (rule) Paid calls are a last resort. Offline and deterministic paths get first refusal.
+[cost-02] (said) (rule) Cheapest capable model first. Escalate only when the cheap one demonstrably failed, and say so.
+[cost-03] (said) (rule) Quote real input + output cost before spending, and confirm before running anything unbounded.
+
+## dia — diagrams | when: any wiring, circuit or schematic diagram
+# (empty — awaiting your first correction)
+
+## git — version control | when: commit, push, PR, or a credential
+[git-01] (said) (rule) No AI attribution anywhere — not in commit trailers, PR bodies, or file headers, unless you ask for it.
+[git-02] (said) (rule) Never git-track a project containing a live credential. Report file, line and kind; never the value.
+[git-03] (observed) (default) Commit and push only when asked. Branch first if on the default branch.
+
+## code — writing and reviewing code | when: writing or reviewing code
+[code-01] (observed) (default) Match the surrounding code's naming, comment density and idiom.
+[code-02] (said) (rule) Never claim something works without running it.

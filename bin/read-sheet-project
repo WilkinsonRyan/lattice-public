@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Read a Sheets project folder: the .xlsx export plus its script files.
+
+    read-sheet-project "~/Desktop/Work/Context Documents/sheets/My Sheet"
+
+Prints every formula in the workbook (deduplicated by pattern), lists the script
+files, cross-references which formulas call functions defined in those scripts,
+and flags tabs that look like they LOST their formulas on export.
+
+Why the flagging matters: Google exports its own functions — QUERY, IMPORTRANGE,
+SPARKLINE, FLATTEN, GOOGLEFINANCE — as static VALUES, not formulas. Such a tab
+arrives as plain numbers with nothing saying a formula was ever there. This tool
+cannot recover them, but it tells you where to ask.
+
+Standard library only. A .xlsx is a zip of XML, so no openpyxl needed.
+"""
+from __future__ import annotations
+
+import re
+import sys
+import zipfile
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+      "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships"}
+SCRIPT_SUFFIXES = {".txt", ".gs", ".js", ".json"}
+GOOGLE_ISH = re.compile(
+    r"_xlfn\.|_xlws\.|ANCHORARRAY|IMPORTRANGE|QUERY\s*\(|SPARKLINE|FLATTEN|GOOGLE", re.I)
+
+
+def sheets_in(z: zipfile.ZipFile) -> list[tuple[str, str]]:
+    """[(tab name, zip path)] in workbook order."""
+    wb = ET.fromstring(z.read("xl/workbook.xml"))
+    rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+    target = {}
+    for rel in rels:
+        rid = rel.get("Id")
+        t = rel.get("Target", "")
+        t = t[1:] if t.startswith("/") else ("xl/" + t if not t.startswith("xl/") else t)
+        target[rid] = t.replace("xl/xl/", "xl/")
+    out = []
+    sheets_el = wb.find("m:sheets", NS)
+    for sh in (list(sheets_el) if sheets_el is not None else []):
+        rid = sh.get(f"{{{NS['r']}}}id")
+        if rid in target:
+            out.append((sh.get("name", "?"), target[rid]))
+    return out
+
+
+def scan_sheet(z: zipfile.ZipFile, path: str) -> tuple[dict, int, int, int]:
+    """Return (patterns, formula_cells, value_cells, max_row)."""
+    patterns: dict[str, dict] = {}
+    n_f = n_v = max_row = 0
+    root = ET.fromstring(z.read(path))
+    for row in root.iter(f"{{{NS['m']}}}row"):
+        try:
+            max_row = max(max_row, int(row.get("r") or 0))
+        except ValueError:
+            pass
+        for c in row:
+            f = c.find("m:f", NS)
+            if f is not None and (f.text or "").strip():
+                n_f += 1
+                text = "=" + f.text.strip()
+                shape = re.sub(r"\d+", "#", text)
+                e = patterns.setdefault(
+                    shape, {"cell": c.get("r", "?"), "f": text, "n": 0})
+                e["n"] += 1
+            elif c.find("m:v", NS) is not None:
+                n_v += 1
+    return patterns, n_f, n_v, max_row
+
+
+def load_scripts(folder: Path) -> dict[str, str]:
+    out = {}
+    for p in sorted(folder.rglob("*")):
+        if p.is_file() and p.suffix.lower() in SCRIPT_SUFFIXES and p.name.lower() != "readme.md":
+            try:
+                out[str(p.relative_to(folder))] = p.read_text(errors="ignore")
+            except OSError:
+                pass
+    return out
+
+
+def script_functions(scripts: dict[str, str]) -> dict[str, str]:
+    """function name -> file that defines it"""
+    found: dict[str, str] = {}
+    pat = re.compile(r"^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", re.M)
+    arrow = re.compile(r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(", re.M)
+    for name, body in scripts.items():
+        for p in (pat, arrow):
+            for m in p.finditer(body):
+                found.setdefault(m.group(1), name)
+    return found
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    folder = Path(sys.argv[1]).expanduser().resolve()
+    if not folder.is_dir():
+        sys.exit(f"not a directory: {folder}")
+
+    books = sorted(folder.glob("*.xlsx")) + sorted(folder.glob("*.xlsm"))
+    scripts = load_scripts(folder)
+    funcs = script_functions(scripts)
+
+    print(f"# {folder.name}\n")
+    print(f"- workbook(s): {', '.join(b.name for b in books) or '**none found**'}")
+    print(f"- script files: {len(scripts)}"
+          + (f" — {', '.join(scripts)}" if scripts else " — **none found**"))
+    print(f"- functions defined in scripts: {len(funcs)}"
+          + (f" — {', '.join(sorted(funcs))}" if funcs else ""))
+    print()
+    if not books:
+        return 1
+
+    called: dict[str, list[str]] = {}
+    suspicious: list[str] = []
+
+    for book in books:
+        with zipfile.ZipFile(book) as z:
+            for title, path in sheets_in(z):
+                patterns, n_f, n_v, rows = scan_sheet(z, path)
+                print(f"## Tab: {title}\n")
+                print(f"- ~{rows} rows · {n_f} formula cells · {n_v} value cells\n")
+
+                if n_f == 0 and n_v > 50:
+                    suspicious.append(title)
+                    print(f"  > **No formulas, but {n_v} populated cells.** On a Google\n"
+                          "  > export this is the signature of a tab whose formulas were\n"
+                          "  > replaced by static values — QUERY, IMPORTRANGE, SPARKLINE\n"
+                          "  > and friends do not survive. Ask what builds this tab.\n")
+
+                for e in sorted(patterns.values(), key=lambda d: -d["n"]):
+                    rep = f"  _({e['n']} cells)_" if e["n"] > 1 else ""
+                    print(f"- **{e['cell']}**{rep}")
+                    print(f"  ```\n  {e['f']}\n  ```")
+                    if GOOGLE_ISH.search(e["f"]):
+                        print("  > Google-specific construct — confirm it means the same "
+                              "thing in the real Sheet\n")
+                    for fn in funcs:
+                        if re.search(rf"\b{re.escape(fn)}\s*\(", e["f"]):
+                            called.setdefault(fn, []).append(f"{title}!{e['cell']}")
+                print()
+
+    print("## Formulas calling script functions\n")
+    if called:
+        for fn, cells in sorted(called.items()):
+            print(f"- `{fn}()` — defined in `{funcs[fn]}` — called from "
+                  f"{', '.join(cells[:6])}{' …' if len(cells) > 6 else ''}")
+    else:
+        print("_None detected._ If the Sheet does use custom functions, their calls were\n"
+              "likely exported as values — see any flagged tabs above.")
+    print()
+
+    unused = sorted(set(funcs) - set(called))
+    if unused:
+        print("## Script functions not called from any formula\n")
+        print("Triggers, menu handlers, or helpers called from other functions:\n")
+        for fn in unused:
+            print(f"- `{fn}()` in `{funcs[fn]}`")
+        print()
+
+    if suspicious:
+        print("## Tabs to ask about\n")
+        for t in suspicious:
+            print(f"- **{t}** — populated but formula-free")
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Share knowledge between two machines the same person uses.
+#
+# Order matters: publish local state BEFORE pulling, or the rebase trips over
+# the working tree. `lattice import` also regenerates project_index.md, which is
+# tracked, so anything that pulls before committing will always fail.
+#
+# Safe to run repeatedly. Import is additive and export is deterministic, so a
+# run with nothing new produces no commit.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+LAT="./.venv/bin/lattice"
+HOST="$(hostname -s)"
+
+commit_if_changed() {
+    if [ -n "$(git status --porcelain lattice_data memory)" ]; then
+        git add lattice_data memory
+        git commit -q -m "sync: $1 from ${HOST}"
+        return 0
+    fi
+    return 1
+}
+
+# ORDER IS LOAD-BEARING. `lattice export` writes the FULL current state of this
+# machine, replacing the files. If a machine exports and commits before pulling,
+# a machine that knows less silently deletes what the other one knew. That
+# happened on 2026-08-19: the Mac Studio wiped skills.jsonl to zero.
+#
+# So: pull and merge FIRST, then export a superset. --autostash keeps unrelated
+# work-in-progress from blocking the pull.
+
+# 1. take everything the other machine published
+git pull -q --rebase --autostash
+
+# 2. merge it into this machine's database (additive; never deletes)
+"$LAT" import
+
+# 3. now export — this machine's state is a superset of both
+"$LAT" export >/dev/null
+commit_if_changed "knowledge" || true
+
+if [ -n "$(git log origin/main..HEAD --oneline 2>/dev/null)" ]; then
+    git push -q
+    echo "published from ${HOST}"
+else
+    echo "up to date — nothing to publish"
+fi

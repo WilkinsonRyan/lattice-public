@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lattice"
+version = "1.0.0"
+description = "Personal AI development platform — one shared knowledge core, many front doors."
+requires-python = ">=3.11"
+dependencies = []          # stdlib only, on purpose
+
+[project.scripts]
+lattice = "lattice.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lattice*"]
